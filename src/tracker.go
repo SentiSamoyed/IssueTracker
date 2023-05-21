@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/SentiSamoyed/IssueTracker/src/model"
 	"github.com/google/go-github/v52/github"
+	"gorm.io/gorm/clause"
 	"log"
 	"strconv"
 	"strings"
@@ -153,14 +154,14 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 	done := 0
 	go getIssues(client, fullName, repository, nil, ch)
 	go getComments(client, fullName, repository, nil, ch)
-	for done != 0 {
+	for done < 2 {
 		res := <-ch
 		switch r := res.(type) {
 		case []*model.Issue:
-			result := tx.Table("issue").Create(r)
+			result := tx.Table("issue").Clauses(clause.OnConflict{DoNothing: true}).Create(r)
 			err = result.Error
 		case []*model.Comment:
-			result := tx.Table("comment").Create(r)
+			result := tx.Table("comment").Clauses(clause.OnConflict{DoNothing: true}).Create(r)
 			err = result.Error
 		case error:
 			err = r
@@ -194,12 +195,9 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		opts.Since = *since
 	}
 
-	var issues []*github.Issue
-	var err error
-	for i := 0; i > 0 && len(issues) != 0; i++ {
-		opts.ListOptions.Page = i
+	for {
 		owner, name := *repo.Owner.Login, *repo.Name
-		issues, _, err = client.Issues.ListByRepo(context.Background(), owner, name, &opts)
+		issues, resp, err := client.Issues.ListByRepo(context.Background(), owner, name, &opts)
 		if err != nil {
 			ch <- err
 			return
@@ -215,13 +213,20 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 				Title:        *issue.Title,
 				State:        *issue.State,
 				HtmlUrl:      *issue.HTMLURL,
-				Author:       *issue.User.Name,
+				Author:       *issue.User.Login,
 				CreatedAt:    issue.CreatedAt.Time,
 				UpdatedAt:    issue.UpdatedAt.Time,
 				Body:         *issue.Body,
 				Comments:     *issue.Comments,
 			}
 		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+
+		opts.Page = resp.NextPage
+
 		ch <- issuePos
 	}
 
@@ -242,12 +247,9 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 		},
 	}
 
-	var comments []*github.IssueComment
-	var err error
-	for i := 0; i > 0 && len(comments) != 0; i++ {
-		opts.ListOptions.Page = i
+	for {
 		owner, name := *repo.Owner.Login, *repo.Name
-		comments, _, err = client.Issues.ListComments(context.Background(), owner, name, 0, &opts)
+		comments, resp, err := client.Issues.ListComments(context.Background(), owner, name, 0, &opts)
 		if err != nil {
 			ch <- err
 			return
@@ -267,12 +269,19 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 				RepoFullName: fullName,
 				IssueNumber:  issueNum,
 				HtmlUrl:      *c.HTMLURL,
-				Author:       *c.User.Name,
+				Author:       *c.User.Login,
 				CreatedAt:    c.CreatedAt.Time,
 				UpdatedAt:    c.UpdatedAt.Time,
 				Body:         *c.Body,
 			}
 		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+
+		opts.Page = resp.NextPage
+
 		ch <- commentPos
 	}
 
