@@ -8,7 +8,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -135,12 +134,53 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 		}
 	}()
 
-	// TODO: issues and comments can retrieve concurrently, then written with this single thread.
+	repoPo = model.Repo{
+		Id:       *repository.ID,
+		Owner:    *repository.Owner.Login,
+		Name:     *repository.Name,
+		FullName: *repository.FullName,
+		HtmlUrl:  *repository.HTMLURL,
+	}
+
+	if result := tx.Table("repo").Create(&repoPo); result.Error != nil {
+		return Failed, result.Error
+	}
+
+	repoLog(fullName, "Repo written to the database")
+
+	/* Get Issues and Comments */
+	ch := make(chan interface{}, 1)
+	done := 0
+	go getIssues(client, fullName, repository, nil, ch)
+	go getComments(client, fullName, repository, nil, ch)
+	for done != 0 {
+		res := <-ch
+		switch r := res.(type) {
+		case []*model.Issue:
+			result := tx.Table("issue").Create(r)
+			err = result.Error
+		case []*model.Comment:
+			result := tx.Table("comment").Create(r)
+			err = result.Error
+		case error:
+			err = r
+		case Answer:
+			done++
+		default:
+			err = fmt.Errorf("unexpected type: %v", r)
+		}
+
+		if err != nil {
+			return Failed, err
+		}
+	}
+
+	repoLog(fullName, "Issues and comments written to the database.")
 
 	return Done, nil
 }
 
-func saveIssues(client *github.Client, fullName string, repo *github.Repository, since *time.Time, waitGroup *sync.WaitGroup, ch chan interface{}) {
+func getIssues(client *github.Client, fullName string, repo *github.Repository, since *time.Time, ch chan interface{}) {
 	opts := github.IssueListByRepoOptions{
 		Sort:      "created",
 		Direction: "desc",
@@ -158,7 +198,7 @@ func saveIssues(client *github.Client, fullName string, repo *github.Repository,
 	var err error
 	for i := 0; i > 0 && len(issues) != 0; i++ {
 		opts.ListOptions.Page = i
-		owner, name := *repo.Owner.Name, *repo.Name
+		owner, name := *repo.Owner.Login, *repo.Name
 		issues, _, err = client.Issues.ListByRepo(context.Background(), owner, name, &opts)
 		if err != nil {
 			ch <- err
@@ -166,9 +206,9 @@ func saveIssues(client *github.Client, fullName string, repo *github.Repository,
 		}
 
 		size := len(issues)
-		issuePos := make([]model.Issue, size, size)
+		issuePos := make([]*model.Issue, size, size)
 		for i, issue := range issues {
-			issuePos[i] = model.Issue{
+			issuePos[i] = &model.Issue{
 				Id:           *issue.ID,
 				RepoFullName: fullName,
 				IssueNumber:  *issue.Number,
@@ -185,10 +225,10 @@ func saveIssues(client *github.Client, fullName string, repo *github.Repository,
 		ch <- issuePos
 	}
 
-	waitGroup.Done()
+	ch <- Done
 }
 
-func getComments(client *github.Client, fullName string, repo *github.Repository, since *time.Time, waitGroup *sync.WaitGroup, ch chan interface{}) {
+func getComments(client *github.Client, fullName string, repo *github.Repository, since *time.Time, ch chan interface{}) {
 	sSort := "created"
 	sDir := "desc"
 
@@ -206,7 +246,7 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 	var err error
 	for i := 0; i > 0 && len(comments) != 0; i++ {
 		opts.ListOptions.Page = i
-		owner, name := *repo.Owner.Name, *repo.Name
+		owner, name := *repo.Owner.Login, *repo.Name
 		comments, _, err = client.Issues.ListComments(context.Background(), owner, name, 0, &opts)
 		if err != nil {
 			ch <- err
@@ -214,7 +254,7 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 		}
 
 		size := len(comments)
-		commentPos := make([]model.Comment, size, size)
+		commentPos := make([]*model.Comment, size, size)
 		for i, c := range comments {
 			ss := strings.Split(*c.IssueURL, "/")
 			issueNum, err := strconv.Atoi(ss[len(ss)-1])
@@ -222,7 +262,7 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 				ch <- err
 				return
 			}
-			commentPos[i] = model.Comment{
+			commentPos[i] = &model.Comment{
 				Id:           *c.ID,
 				RepoFullName: fullName,
 				IssueNumber:  issueNum,
@@ -236,5 +276,5 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 		ch <- commentPos
 	}
 
-	waitGroup.Done()
+	ch <- Done
 }
