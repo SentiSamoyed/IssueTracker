@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"gopkg.in/yaml.v3"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -16,7 +17,9 @@ type Config struct {
 		Addr string
 	}
 	Datasource struct {
-		Dsn string
+		User     string
+		Password string
+		Suffix   string
 	}
 }
 
@@ -25,15 +28,20 @@ func main() {
 	buf, err := os.ReadFile("config.yaml")
 	if err == nil {
 		err = yaml.Unmarshal(buf, &conf)
+		log.Println(conf)
 	}
 	if err != nil {
 		log.Panic(err.Error())
 	}
 
 	/* Connect to the database */
-	if Db, err = gorm.Open(mysql.Open(conf.Datasource.Dsn), &gorm.Config{}); err != nil {
+	pw := os.Getenv(conf.Datasource.Password)
+	dsn := fmt.Sprintf("%v:%v%v", conf.Datasource.User, pw, conf.Datasource.Suffix)
+	if Db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{}); err != nil {
 		log.Panic(err.Error())
 	}
+
+	InitTracker()
 
 	/* Handlers */
 	http.HandleFunc("/repo/", RepoLoadRequestHandler)

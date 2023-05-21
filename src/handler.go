@@ -1,21 +1,28 @@
 package main
 
 import (
-	"context"
-	"google.golang.org/appengine/log"
+	"fmt"
+	"log"
 	"net/http"
 	"strings"
 )
 
 func RepoLoadRequestHandler(writer http.ResponseWriter, request *http.Request) {
 	path := request.URL.Path
+	path = strings.TrimPrefix(path, "/repo/")
 	ss := strings.Split(path, "/")
-	if len(ss) != 3 {
-		log.Infof(context.Background(), "Bad request: %v", path)
-		writer.WriteHeader(400)
+	if len(ss) != 2 {
+		log.Printf("Bad request: %v\n", path)
+		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	owner, repo := ss[1], ss[2]
+	owner, repo := ss[0], ss[1]
+	fullName := fmt.Sprintf("%s/%s", owner, repo)
 
+	result := TrackerSubmit(fullName)
+
+	if _, err := writer.Write([]byte(fmt.Sprintf("%v", result))); err != nil {
+		log.Printf("Error: Failed to respond %v to %v: %v\n", result, fullName, err.Error())
+	}
 }
