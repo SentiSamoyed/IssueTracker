@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"github.com/SentiSamoyed/IssueTracker/src/model"
 	"github.com/google/go-github/v52/github"
+	"golang.org/x/oauth2"
 	"gorm.io/gorm/clause"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -105,7 +107,13 @@ func handleRequest(fullName string) {
 }
 
 func scrapeRepo(fullName string) (ans Answer, err error) {
-	client := github.NewClient(nil)
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{
+			AccessToken: os.Getenv("GH_TOKEN"),
+		},
+	)
+	client := github.NewClient(oauth2.NewClient(context.Background(), ts))
+
 	ss := strings.Split(fullName, "/")
 	owner, repo := ss[0], ss[1]
 
@@ -136,11 +144,11 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 	}()
 
 	repoPo = model.Repo{
-		Id:       *repository.ID,
-		Owner:    *repository.Owner.Login,
-		Name:     *repository.Name,
-		FullName: *repository.FullName,
-		HtmlUrl:  *repository.HTMLURL,
+		Id:       repository.ID,
+		Owner:    repository.Owner.Login,
+		Name:     repository.Name,
+		FullName: repository.FullName,
+		HtmlUrl:  repository.HTMLURL,
 	}
 
 	if result := tx.Table("repo").Create(&repoPo); result.Error != nil {
@@ -207,17 +215,17 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		issuePos := make([]*model.Issue, size, size)
 		for i, issue := range issues {
 			issuePos[i] = &model.Issue{
-				Id:           *issue.ID,
-				RepoFullName: fullName,
-				IssueNumber:  *issue.Number,
-				Title:        *issue.Title,
-				State:        *issue.State,
-				HtmlUrl:      *issue.HTMLURL,
-				Author:       *issue.User.Login,
-				CreatedAt:    issue.CreatedAt.Time,
-				UpdatedAt:    issue.UpdatedAt.Time,
-				Body:         *issue.Body,
-				Comments:     *issue.Comments,
+				Id:           issue.ID,
+				RepoFullName: &fullName,
+				IssueNumber:  issue.Number,
+				Title:        issue.Title,
+				State:        issue.State,
+				HtmlUrl:      issue.HTMLURL,
+				Author:       issue.User.Login,
+				CreatedAt:    &issue.CreatedAt.Time,
+				UpdatedAt:    &issue.UpdatedAt.Time,
+				Body:         issue.Body,
+				Comments:     issue.Comments,
 			}
 		}
 
@@ -265,14 +273,14 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 				return
 			}
 			commentPos[i] = &model.Comment{
-				Id:           *c.ID,
-				RepoFullName: fullName,
-				IssueNumber:  issueNum,
-				HtmlUrl:      *c.HTMLURL,
-				Author:       *c.User.Login,
-				CreatedAt:    c.CreatedAt.Time,
-				UpdatedAt:    c.UpdatedAt.Time,
-				Body:         *c.Body,
+				Id:           c.ID,
+				RepoFullName: &fullName,
+				IssueNumber:  &issueNum,
+				HtmlUrl:      c.HTMLURL,
+				Author:       c.User.Login,
+				CreatedAt:    &c.CreatedAt.Time,
+				UpdatedAt:    &c.UpdatedAt.Time,
+				Body:         c.Body,
 			}
 		}
 
