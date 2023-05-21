@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"github.com/SentiSamoyed/IssueTracker/src/model"
 	"github.com/google/go-github/v52/github"
-	"gorm.io/gorm"
 	"log"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 type Answer int
@@ -133,16 +135,12 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 		}
 	}()
 
-	err = saveIssues(client, fullName, repository, tx)
-	if err != nil {
-		return Failed, err
-	}
+	// TODO: issues and comments can retrieve concurrently, then written with this single thread.
 
 	return Done, nil
 }
 
-func saveIssues(client *github.Client, fullName string, repo *github.Repository, tx *gorm.DB) (err error) {
-	// TODO: since last issue
+func saveIssues(client *github.Client, fullName string, repo *github.Repository, since *time.Time, waitGroup *sync.WaitGroup, ch chan interface{}) {
 	opts := github.IssueListByRepoOptions{
 		Sort:      "created",
 		Direction: "desc",
@@ -152,18 +150,25 @@ func saveIssues(client *github.Client, fullName string, repo *github.Repository,
 		},
 	}
 
-	var allIssues []model.Issue
+	if since != nil {
+		opts.Since = *since
+	}
+
 	var issues []*github.Issue
+	var err error
 	for i := 0; i > 0 && len(issues) != 0; i++ {
 		opts.ListOptions.Page = i
 		owner, name := *repo.Owner.Name, *repo.Name
 		issues, _, err = client.Issues.ListByRepo(context.Background(), owner, name, &opts)
 		if err != nil {
-			return err
+			ch <- err
+			return
 		}
 
-		for _, issue := range issues {
-			issuePo := model.Issue{
+		size := len(issues)
+		issuePos := make([]model.Issue, size, size)
+		for i, issue := range issues {
+			issuePos[i] = model.Issue{
 				Id:           *issue.ID,
 				RepoFullName: fullName,
 				IssueNumber:  *issue.Number,
@@ -176,9 +181,60 @@ func saveIssues(client *github.Client, fullName string, repo *github.Repository,
 				Body:         *issue.Body,
 				Comments:     *issue.Comments,
 			}
-			allIssues = append(allIssues, issuePo)
 		}
+		ch <- issuePos
 	}
+
+	waitGroup.Done()
 }
 
-func getComments()
+func getComments(client *github.Client, fullName string, repo *github.Repository, since *time.Time, waitGroup *sync.WaitGroup, ch chan interface{}) {
+	sSort := "created"
+	sDir := "desc"
+
+	opts := github.IssueListCommentsOptions{
+		Sort:      &sSort,
+		Direction: &sDir,
+		Since:     since,
+		ListOptions: github.ListOptions{
+			Page:    0,
+			PerPage: 100,
+		},
+	}
+
+	var comments []*github.IssueComment
+	var err error
+	for i := 0; i > 0 && len(comments) != 0; i++ {
+		opts.ListOptions.Page = i
+		owner, name := *repo.Owner.Name, *repo.Name
+		comments, _, err = client.Issues.ListComments(context.Background(), owner, name, 0, &opts)
+		if err != nil {
+			ch <- err
+			return
+		}
+
+		size := len(comments)
+		commentPos := make([]model.Comment, size, size)
+		for i, c := range comments {
+			ss := strings.Split(*c.IssueURL, "/")
+			issueNum, err := strconv.Atoi(ss[len(ss)-1])
+			if err != nil {
+				ch <- err
+				return
+			}
+			commentPos[i] = model.Comment{
+				Id:           *c.ID,
+				RepoFullName: fullName,
+				IssueNumber:  issueNum,
+				HtmlUrl:      *c.HTMLURL,
+				Author:       *c.User.Name,
+				CreatedAt:    c.CreatedAt.Time,
+				UpdatedAt:    c.UpdatedAt.Time,
+				Body:         *c.Body,
+			}
+		}
+		ch <- commentPos
+	}
+
+	waitGroup.Done()
+}
