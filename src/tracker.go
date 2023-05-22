@@ -120,9 +120,9 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 	/* Check the database first */
 	repoPo := model.Repo{}
 	result := Db.Table("repo").Where("full_name = ?", fullName).Take(&repoPo)
-	if result.Error == nil {
-		repoLog(fullName, "Has been stored in the database")
-		return Done, nil
+	existed := result.Error == nil
+	if existed {
+		repoLog(fullName, "Has been stored in the database. Now trying to update...")
 	}
 
 	/* Get the repository */
@@ -143,33 +143,56 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 		}
 	}()
 
-	repoPo = model.Repo{
-		Id:       repository.ID,
-		Owner:    repository.Owner.Login,
-		Name:     repository.Name,
-		FullName: repository.FullName,
-		HtmlUrl:  repository.HTMLURL,
+	if !existed {
+		repoPo = model.Repo{
+			Id:       repository.ID,
+			Owner:    repository.Owner.Login,
+			Name:     repository.Name,
+			FullName: repository.FullName,
+			HtmlUrl:  repository.HTMLURL,
+		}
+
+		if result := tx.Table("repo").Create(&repoPo); result.Error != nil {
+			return Failed, result.Error
+		}
+
+		repoLog(fullName, "Repo written to the database")
 	}
 
-	if result := tx.Table("repo").Create(&repoPo); result.Error != nil {
-		return Failed, result.Error
+	var lastIssue model.Issue
+	var lastComment model.Comment
+	var sinceIssue, sinceComment *time.Time
+	if tx.Table("issue").Order("created_at desc").Limit(1).Find(&lastIssue).RowsAffected == 1 {
+		sinceIssue = lastIssue.CreatedAt
+		repoLog(fullName, "Getting issues since %v", sinceIssue)
 	}
-
-	repoLog(fullName, "Repo written to the database")
+	if tx.Table("comment").Order("created_at desc").Limit(1).Find(&lastComment).RowsAffected == 1 {
+		sinceComment = lastComment.CreatedAt
+		repoLog(fullName, "Getting comments since %v", sinceComment)
+	}
 
 	/* Get Issues and Comments */
 	ch := make(chan interface{}, 1)
 	done := 0
-	go getIssues(client, fullName, repository, nil, ch)
-	go getComments(client, fullName, repository, nil, ch)
-	for done < 2 {
+	sum := int64(0)
+	go getReleases(client, fullName, repository, ch)
+	go getIssues(client, fullName, repository, sinceIssue, ch)
+	go getComments(client, fullName, repository, sinceComment, ch)
+	for done < 3 {
 		res := <-ch
+		delta := int64(0)
 		switch r := res.(type) {
+		case []*model.Release:
+			result := tx.Table("release").Clauses(clause.OnConflict{DoNothing: true}).Create(r)
+			delta = result.RowsAffected
+			err = result.Error
 		case []*model.Issue:
 			result := tx.Table("issue").Clauses(clause.OnConflict{DoNothing: true}).Create(r)
+			delta = result.RowsAffected
 			err = result.Error
 		case []*model.Comment:
 			result := tx.Table("comment").Clauses(clause.OnConflict{DoNothing: true}).Create(r)
+			delta = result.RowsAffected
 			err = result.Error
 		case error:
 			err = r
@@ -181,16 +204,56 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 
 		if err != nil {
 			return Failed, err
+		} else {
+			sum += delta
 		}
 	}
 
-	repoLog(fullName, "Issues and comments written to the database.")
+	repoLog(fullName, "Releases, Issues, and comments written to the database.")
+	repoLog(fullName, "Written %v rows in total.", sum)
 
 	return Done, nil
 }
 
+func getReleases(client *github.Client, fullName string, repo *github.Repository, ch chan interface{}) {
+	opts := github.ListOptions{
+		Page:    0,
+		PerPage: 100,
+	}
+
+	for {
+		owner, name := *repo.Owner.Login, *repo.Name
+		releases, resp, err := client.Repositories.ListReleases(context.Background(), owner, name, &opts)
+		if err != nil {
+			ch <- err
+			return
+		}
+
+		size := len(releases)
+		releasePos := make([]*model.Release, 0, size)
+		for _, release := range releases {
+			releasePos = append(releasePos, &model.Release{
+				Id:           release.ID,
+				RepoFullName: &fullName,
+				TagName:      release.TagName,
+				CreatedAt:    &release.CreatedAt.Time,
+			})
+		}
+		ch <- releasePos
+
+		if resp.NextPage == 0 {
+			break
+		}
+
+		opts.Page = resp.NextPage
+	}
+
+	ch <- Done
+}
+
 func getIssues(client *github.Client, fullName string, repo *github.Repository, since *time.Time, ch chan interface{}) {
 	opts := github.IssueListByRepoOptions{
+		State:     "all",
 		Sort:      "created",
 		Direction: "desc",
 		ListOptions: github.ListOptions{
@@ -212,9 +275,9 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		}
 
 		size := len(issues)
-		issuePos := make([]*model.Issue, size, size)
-		for i, issue := range issues {
-			issuePos[i] = &model.Issue{
+		issuePos := make([]*model.Issue, 0, size)
+		for _, issue := range issues {
+			issuePos = append(issuePos, &model.Issue{
 				Id:           issue.ID,
 				RepoFullName: &fullName,
 				IssueNumber:  issue.Number,
@@ -226,16 +289,15 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 				UpdatedAt:    &issue.UpdatedAt.Time,
 				Body:         issue.Body,
 				Comments:     issue.Comments,
-			}
+			})
 		}
+		ch <- issuePos
 
 		if resp.NextPage == 0 {
 			break
 		}
 
 		opts.Page = resp.NextPage
-
-		ch <- issuePos
 	}
 
 	ch <- Done
@@ -283,14 +345,13 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 				Body:         c.Body,
 			}
 		}
+		ch <- commentPos
 
 		if resp.NextPage == 0 {
 			break
 		}
 
 		opts.Page = resp.NextPage
-
-		ch <- commentPos
 	}
 
 	ch <- Done

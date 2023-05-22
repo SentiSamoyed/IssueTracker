@@ -4,4 +4,4 @@ server:
 datasource:
   user: nju
   password: NJU_PASSWORD
-  suffix: "@tcp(124.223.97.89:3306)/sentisamoyed"
+  suffix: "@tcp(124.223.97.89:3306)/sentisamoyed?parseTime=true"
