@@ -277,6 +277,9 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		size := len(issues)
 		issuePos := make([]*model.Issue, 0, size)
 		for _, issue := range issues {
+			if issue.PullRequestLinks != nil {
+				continue
+			}
 			issuePos = append(issuePos, &model.Issue{
 				Id:           issue.ID,
 				RepoFullName: &fullName,
