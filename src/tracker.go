@@ -9,7 +9,6 @@ import (
 	"gorm.io/gorm/clause"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -160,15 +159,10 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 	}
 
 	var lastIssue model.Issue
-	var lastComment model.Comment
-	var sinceIssue, sinceComment *time.Time
+	var sinceIssue *time.Time
 	if tx.Table("issue").Order("created_at desc").Limit(1).Find(&lastIssue).RowsAffected == 1 {
 		sinceIssue = lastIssue.CreatedAt
 		repoLog(fullName, "Getting issues since %v", sinceIssue)
-	}
-	if tx.Table("comment").Order("created_at desc").Limit(1).Find(&lastComment).RowsAffected == 1 {
-		sinceComment = lastComment.CreatedAt
-		repoLog(fullName, "Getting comments since %v", sinceComment)
 	}
 
 	/* Get Issues and Comments */
@@ -177,8 +171,9 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 	sum := int64(0)
 	go getReleases(client, fullName, repository, ch)
 	go getIssues(client, fullName, repository, sinceIssue, ch)
-	go getComments(client, fullName, repository, sinceComment, ch)
-	for done < 3 {
+
+	finished := 3 // Release + Issue + Comment(Created by getIssues)
+	for done < finished {
 		res := <-ch
 		delta := int64(0)
 		switch r := res.(type) {
@@ -196,6 +191,7 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 			err = result.Error
 		case error:
 			err = r
+			done++
 		case Answer:
 			done++
 		default:
@@ -203,6 +199,18 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 		}
 
 		if err != nil {
+			repoLog(fullName, "Failed, waiting for all the goroutine to finish.")
+			for done < finished {
+				repoLog(fullName, "Error: "+err.Error())
+				switch r := (<-ch).(type) {
+				case error:
+					err = r
+					done++
+				case Answer:
+					done++
+				default:
+				}
+			}
 			return Failed, err
 		} else {
 			sum += delta
@@ -266,6 +274,12 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		opts.Since = *since
 	}
 
+	commentCh := make(chan interface{}, 50)
+	go getComments(client, fullName, repo, since, commentCh, ch)
+	defer func() {
+		commentCh <- Done
+	}()
+
 	for {
 		owner, name := *repo.Owner.Login, *repo.Name
 		issues, resp, err := client.Issues.ListByRepo(context.Background(), owner, name, &opts)
@@ -275,26 +289,34 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		}
 
 		size := len(issues)
-		issuePos := make([]*model.Issue, 0, size)
-		for _, issue := range issues {
-			if issue.PullRequestLinks != nil {
-				continue
+		if size > 0 {
+			issuePos := make([]*model.Issue, 0, size)
+			for _, issue := range issues {
+				if issue.PullRequestLinks != nil {
+					continue
+				}
+				issuePos = append(issuePos, &model.Issue{
+					Id:           issue.ID,
+					RepoFullName: &fullName,
+					IssueNumber:  issue.Number,
+					Title:        issue.Title,
+					State:        issue.State,
+					HtmlUrl:      issue.HTMLURL,
+					Author:       issue.User.Login,
+					CreatedAt:    &issue.CreatedAt.Time,
+					UpdatedAt:    &issue.UpdatedAt.Time,
+					Body:         issue.Body,
+					Comments:     issue.Comments,
+				})
+				if *issue.Comments > 0 {
+					commentCh <- *issue.Number
+				}
 			}
-			issuePos = append(issuePos, &model.Issue{
-				Id:           issue.ID,
-				RepoFullName: &fullName,
-				IssueNumber:  issue.Number,
-				Title:        issue.Title,
-				State:        issue.State,
-				HtmlUrl:      issue.HTMLURL,
-				Author:       issue.User.Login,
-				CreatedAt:    &issue.CreatedAt.Time,
-				UpdatedAt:    &issue.UpdatedAt.Time,
-				Body:         issue.Body,
-				Comments:     issue.Comments,
-			})
+			// Double check
+			if len(issuePos) > 0 {
+				ch <- issuePos
+			}
 		}
-		ch <- issuePos
 
 		if resp.NextPage == 0 {
 			break
@@ -306,7 +328,7 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 	ch <- Done
 }
 
-func getComments(client *github.Client, fullName string, repo *github.Repository, since *time.Time, ch chan interface{}) {
+func getComments(client *github.Client, fullName string, repo *github.Repository, since *time.Time, in chan interface{}, ch chan interface{}) {
 	sSort := "created"
 	sDir := "desc"
 
@@ -320,42 +342,68 @@ func getComments(client *github.Client, fullName string, repo *github.Repository
 		},
 	}
 
+	defer func() {
+		ch <- Done
+	}()
+
 	for {
-		owner, name := *repo.Owner.Login, *repo.Name
-		comments, resp, err := client.Issues.ListComments(context.Background(), owner, name, 0, &opts)
-		if err != nil {
-			ch <- err
+		var issueNumber int
+		switch r := (<-in).(type) {
+		case Answer:
+			ch <- Done
 			return
+		case int:
+			issueNumber = r
 		}
 
-		size := len(comments)
-		commentPos := make([]*model.Comment, size, size)
-		for i, c := range comments {
-			ss := strings.Split(*c.IssueURL, "/")
-			issueNum, err := strconv.Atoi(ss[len(ss)-1])
+		var outerErr error
+	outer:
+		for {
+			owner, name := *repo.Owner.Login, *repo.Name
+			comments, resp, err := client.Issues.ListComments(context.Background(), owner, name, issueNumber, &opts)
 			if err != nil {
-				ch <- err
-				return
+				outerErr = err
+				break outer
 			}
-			commentPos[i] = &model.Comment{
-				Id:           c.ID,
-				RepoFullName: &fullName,
-				IssueNumber:  &issueNum,
-				HtmlUrl:      c.HTMLURL,
-				Author:       c.User.Login,
-				CreatedAt:    &c.CreatedAt.Time,
-				UpdatedAt:    &c.UpdatedAt.Time,
-				Body:         c.Body,
+
+			size := len(comments)
+			if size > 0 {
+				commentPos := make([]*model.Comment, size, size)
+				for i, c := range comments {
+					if err != nil {
+						outerErr = err
+						break outer
+					}
+					commentPos[i] = &model.Comment{
+						Id:           c.ID,
+						RepoFullName: &fullName,
+						IssueNumber:  &issueNumber,
+						HtmlUrl:      c.HTMLURL,
+						Author:       c.User.Login,
+						CreatedAt:    &c.CreatedAt.Time,
+						UpdatedAt:    &c.UpdatedAt.Time,
+						Body:         c.Body,
+					}
+				}
+				ch <- commentPos
+			}
+
+			if resp.NextPage == 0 {
+				break
+			}
+
+			opts.Page = resp.NextPage
+		}
+
+		if outerErr != nil {
+			ch <- outerErr
+			for {
+				switch (<-in).(type) {
+				case Answer:
+					return
+				default:
+				}
 			}
 		}
-		ch <- commentPos
-
-		if resp.NextPage == 0 {
-			break
-		}
-
-		opts.Page = resp.NextPage
 	}
-
-	ch <- Done
 }
