@@ -172,7 +172,7 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 
 	var lastIssue model.Issue
 	var sinceIssue *time.Time
-	if tx.Table("issue").Order("created_at desc").Limit(1).Find(&lastIssue).RowsAffected == 1 {
+	if tx.Table("issue").Where("repo_full_name = ?", fullName).Order("created_at desc").Limit(1).Find(&lastIssue).RowsAffected == 1 {
 		sinceIssue = lastIssue.CreatedAt
 		repoLog(fullName, "Getting issues since %v", sinceIssue)
 	}
@@ -215,9 +215,6 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 		}
 
 		sum += delta
-		if sum%100 == 0 {
-			repoLog(fullName, "Written %v rows.", sum)
-		}
 	}
 
 	repoLog(fullName, "Releases, Issues, and comments written to the database.")
@@ -259,6 +256,7 @@ func getReleases(client *github.Client, fullName string, repo *github.Repository
 		opts.Page = resp.NextPage
 	}
 
+	repoLog(fullName, "Releases done")
 	ch <- Done
 }
 
@@ -266,7 +264,7 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 	opts := github.IssueListByRepoOptions{
 		State:     "all",
 		Sort:      "created",
-		Direction: "desc",
+		Direction: "asc",
 		ListOptions: github.ListOptions{
 			Page:    0,
 			PerPage: 100,
@@ -283,43 +281,24 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		commentCh <- Done
 	}()
 
+	sum := 0
+	milestone := 0
 	for {
 		owner, name := *repo.Owner.Login, *repo.Name
 		issues, resp, err := client.Issues.ListByRepo(context.Background(), owner, name, &opts)
+
 		if err != nil {
 			ch <- err
 			return
 		}
 
-		size := len(issues)
-		if size > 0 {
-			issuePos := make([]*model.Issue, 0, size)
-			for _, issue := range issues {
-				if issue.PullRequestLinks != nil {
-					continue
-				}
-				issuePos = append(issuePos, &model.Issue{
-					Id:           issue.ID,
-					RepoFullName: &fullName,
-					IssueNumber:  issue.Number,
-					Title:        issue.Title,
-					State:        issue.State,
-					HtmlUrl:      issue.HTMLURL,
-					Author:       issue.User.Login,
-					CreatedAt:    &issue.CreatedAt.Time,
-					UpdatedAt:    &issue.UpdatedAt.Time,
-					Body:         issue.Body,
-					Comments:     issue.Comments,
-				})
-				if *issue.Comments > 0 {
-					commentCh <- *issue.Number
-				}
-			}
-			// Double check
-			if len(issuePos) > 0 {
-				ch <- issuePos
-			}
+		since = issues[len(issues)-1].CreatedAt.GetTime()
+		sum += len(issues)
+		if sum >= milestone*100 {
+			repoLog(fullName, "%v issues saved", sum)
+			milestone = (sum + 99) / 100
 		}
+		dealWithIssues(issues, fullName, commentCh, ch)
 
 		if resp.NextPage == 0 {
 			break
@@ -328,7 +307,40 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		opts.Page = resp.NextPage
 	}
 
+	repoLog(fullName, "Issues done")
 	ch <- Done
+}
+
+func dealWithIssues(issues []*github.Issue, fullName string, commentCh chan interface{}, ch chan interface{}) {
+	size := len(issues)
+	if size > 0 {
+		issuePos := make([]*model.Issue, 0, size)
+		for _, issue := range issues {
+			if issue.PullRequestLinks != nil {
+				continue
+			}
+			issuePos = append(issuePos, &model.Issue{
+				Id:           issue.ID,
+				RepoFullName: &fullName,
+				IssueNumber:  issue.Number,
+				Title:        issue.Title,
+				State:        issue.State,
+				HtmlUrl:      issue.HTMLURL,
+				Author:       issue.User.Login,
+				CreatedAt:    &issue.CreatedAt.Time,
+				UpdatedAt:    &issue.UpdatedAt.Time,
+				Body:         issue.Body,
+				Comments:     issue.Comments,
+			})
+			if *issue.Comments > 0 {
+				commentCh <- *issue.Number
+			}
+		}
+		// Double check
+		if len(issuePos) > 0 {
+			ch <- issuePos
+		}
+	}
 }
 
 func getComments(client *github.Client, fullName string, repo *github.Repository, since *time.Time, in chan interface{}, ch chan interface{}) {
