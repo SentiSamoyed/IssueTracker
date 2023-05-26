@@ -8,6 +8,12 @@ import (
 )
 
 func RepoLoadRequestHandler(writer http.ResponseWriter, request *http.Request) {
+	if "POST" != request.Method {
+		// POST only
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	path := request.URL.Path
 	path = strings.TrimPrefix(path, "/repo/")
 	ss := strings.Split(path, "/")

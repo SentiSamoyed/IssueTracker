@@ -16,6 +16,12 @@ import (
 type Answer int
 
 const (
+	MainChanCap    int = 100
+	CommentChanCap int = 100
+	WriteThreshold int = 1000
+)
+
+const (
 	Undone   Answer = 0
 	Done     Answer = 1
 	NotExist Answer = 2
@@ -36,11 +42,14 @@ type TrackerResult struct {
 
 var reqChan chan TrackerRequest
 var resChan chan TrackerResult
+var taskQueue chan string
 
 func InitTracker() {
 	reqChan = make(chan TrackerRequest, 50)
 	resChan = make(chan TrackerResult, 50)
+	taskQueue = make(chan string, 100)
 	go mainLoop()
+	go handleRequest()
 }
 
 func TrackerSubmit(fullName string) Answer {
@@ -66,7 +75,7 @@ func mainLoop() {
 				ch <- ans
 			} else {
 				tasks[fullName] = Undone
-				go handleRequest(fullName)
+				taskQueue <- fullName
 				ch <- Undone
 			}
 
@@ -89,19 +98,22 @@ func repoLog(fullName string, fmt string, value ...interface{}) {
 	log.Printf("["+fullName+"]\t"+fmt+"\n", value...)
 }
 
-func handleRequest(fullName string) {
-	repoLog(fullName, "Received request")
-	ans, err := scrapeRepo(fullName)
-	if err != nil {
-		repoLog(fullName, "Error: %v", err.Error())
-	} else {
-		repoLog(fullName, "Done")
-	}
+func handleRequest() {
+	for {
+		fullName := <-taskQueue
+		repoLog(fullName, "Received request")
+		ans, err := scrapeRepo(fullName)
+		if err != nil {
+			repoLog(fullName, "Error: %v", err.Error())
+		} else {
+			repoLog(fullName, "Done")
+		}
 
-	resChan <- TrackerResult{
-		FullName: fullName,
-		Answer:   ans,
-		Err:      err,
+		resChan <- TrackerResult{
+			FullName: fullName,
+			Answer:   ans,
+			Err:      err,
+		}
 	}
 }
 
@@ -166,7 +178,7 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 	}
 
 	/* Get Issues and Comments */
-	ch := make(chan interface{}, 1)
+	ch := make(chan interface{}, MainChanCap)
 	done := 0
 	sum := int64(0)
 	go getReleases(client, fullName, repository, ch)
@@ -199,21 +211,12 @@ func scrapeRepo(fullName string) (ans Answer, err error) {
 		}
 
 		if err != nil {
-			repoLog(fullName, "Failed, waiting for all the goroutine to finish.")
-			for done < finished {
-				repoLog(fullName, "Error: "+err.Error())
-				switch r := (<-ch).(type) {
-				case error:
-					err = r
-					done++
-				case Answer:
-					done++
-				default:
-				}
-			}
-			return Failed, err
-		} else {
-			sum += delta
+			repoLog(fullName, "Error: "+err.Error())
+		}
+
+		sum += delta
+		if sum%100 == 0 {
+			repoLog(fullName, "Written %v rows.", sum)
 		}
 	}
 
@@ -274,7 +277,7 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 		opts.Since = *since
 	}
 
-	commentCh := make(chan interface{}, 50)
+	commentCh := make(chan interface{}, CommentChanCap)
 	go getComments(client, fullName, repo, since, commentCh, ch)
 	defer func() {
 		commentCh <- Done
