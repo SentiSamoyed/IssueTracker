@@ -1,7 +1,6 @@
 services:
   IssueTracker:
     image: issuetracker
-    build: .
     pull_policy: never
     ports:
       - "8192:8192"
