@@ -14,9 +14,9 @@ pipeline {
             }
             steps {
                 echo 'Deploying....'
-                sh 'sudo bash ./build.sh'
+                sh 'sudo http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 bash ./build.sh'
                 sh 'sudo docker compose down'
-                sh 'NJU_PASSWORD=$NJU_PASSWORD GH_TOKEN=$GH_TOKEN sudo docker compose up -d --build'
+                sh 'sudo NJU_PASSWORD=$NJU_PASSWORD GH_TOKEN=$GH_TOKEN docker compose up -d --build'
             }
         }
     }
