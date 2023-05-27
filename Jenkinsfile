@@ -5,7 +5,7 @@ pipeline {
         stage('Deploy') {
             environment {
                 NJU_PASSWORD = credentials('NJU_PASSWORD')
-                GH_PASSWORD = credentials('GH_PASSWORD')
+                GH_TOKEN = credentials('GH_TOKEN')
             }
             when {
                 anyOf {
