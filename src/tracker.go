@@ -18,7 +18,6 @@ type Answer int
 const (
 	MainChanCap    int = 100
 	CommentChanCap int = 100
-	WriteThreshold int = 1000
 )
 
 const (
