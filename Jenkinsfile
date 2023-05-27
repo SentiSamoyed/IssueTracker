@@ -16,7 +16,7 @@ pipeline {
                 echo 'Deploying....'
                 sh 'sudo bash ./build.sh'
                 sh 'sudo docker compose down'
-                sh 'sudo docker compose up -d --build'
+                sh 'NJU_PASSWORD=$NJU_PASSWORD GH_TOKEN=$GH_TOKEN sudo docker compose up -d --build'
             }
         }
     }
