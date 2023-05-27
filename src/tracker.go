@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/SentiSamoyed/IssueTracker/src/model"
+	"github.com/SentiSamoyed/IssueTracker/model"
 	"github.com/google/go-github/v52/github"
 	"golang.org/x/oauth2"
 	"gorm.io/gorm/clause"
@@ -18,7 +18,6 @@ type Answer int
 const (
 	MainChanCap    int = 100
 	CommentChanCap int = 100
-	WriteThreshold int = 1000
 )
 
 const (

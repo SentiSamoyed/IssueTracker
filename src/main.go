@@ -24,11 +24,15 @@ type Config struct {
 }
 
 func main() {
+	if len(os.Args) < 2 {
+		_, _ = fmt.Fprintf(os.Stderr, "Usage: %v <path/to/config.yaml>\n", os.Args[0])
+		os.Exit(1)
+	}
 	var conf Config
-	buf, err := os.ReadFile("config.yaml")
+	buf, err := os.ReadFile(os.Args[1])
 	if err == nil {
 		err = yaml.Unmarshal(buf, &conf)
-		log.Println(conf)
+		log.Printf("> Config read: %v\n", conf)
 	}
 	if err != nil {
 		log.Panic(err.Error())
@@ -47,5 +51,6 @@ func main() {
 	http.HandleFunc("/repo/", RepoLoadRequestHandler)
 
 	/* Launch */
+	log.Println("> Listening on " + conf.Server.Addr)
 	log.Panic(http.ListenAndServe(conf.Server.Addr, nil))
 }

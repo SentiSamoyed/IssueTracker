@@ -1,5 +1,5 @@
 server:
-  addr: 0.0.0.0:8848
+  addr: 0.0.0.0:8192
 
 datasource:
   user: nju
