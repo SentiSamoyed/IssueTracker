@@ -1,0 +1,10 @@
+services:
+  IssueTracker:
+    image: issuetracker
+    build: .
+    pull_policy: never
+    ports:
+      - "8192:8192"
+    environment:
+      - NJU_PASSWORD=${NJU_PASSWORD}
+      - GH_TOKEN=${GH_TOKEN}
