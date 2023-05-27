@@ -14,6 +14,7 @@ pipeline {
             }
             steps {
                 echo 'Deploying....'
+                sh 'sudo bash ./build.sh'
                 sh 'sudo docker compose down'
                 sh 'sudo docker compose up -d --build'
             }
