@@ -291,7 +291,6 @@ func getIssues(client *github.Client, fullName string, repo *github.Repository, 
 			return
 		}
 
-		since = issues[len(issues)-1].CreatedAt.GetTime()
 		sum += len(issues)
 		if sum >= milestone*100 {
 			repoLog(fullName, "%v issues saved", sum)
