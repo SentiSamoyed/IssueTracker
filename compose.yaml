@@ -8,3 +8,4 @@ services:
     environment:
       - NJU_PASSWORD=${NJU_PASSWORD}
       - GH_TOKEN=${GH_TOKEN}
+    restart: "on-failure"
